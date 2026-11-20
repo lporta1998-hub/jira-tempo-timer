@@ -5,7 +5,8 @@
  * A stopwatch in three states: idle (hand at 12), running (filled), paused (two bars).
  *  - macOS: black "...Template.png" images, which the menu bar recolors for light/dark mode.
  *  - Windows/Linux: colored images (gray / green / amber).
- * Each comes at 16px and @2x (32px).
+ * Each comes at 16px and @2x (32px). Windows also gets a multi-size .ico
+ * (16–64px) so the tray icon stays sharp at 125% / 150% display scaling.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -93,6 +94,30 @@ function encodePng(rgba, size) {
   ]);
 }
 
+/** ICO container holding PNG-compressed images (supported since Windows Vista). */
+function encodeIco(pngs) {
+  const header = Buffer.alloc(6);
+  header.writeUInt16LE(0, 0); // reserved
+  header.writeUInt16LE(1, 2); // type: icon
+  header.writeUInt16LE(pngs.length, 4);
+  const entries = [];
+  let offset = 6 + 16 * pngs.length;
+  for (const { size, data } of pngs) {
+    const e = Buffer.alloc(16);
+    e[0] = size >= 256 ? 0 : size; // width (0 means 256)
+    e[1] = size >= 256 ? 0 : size; // height
+    e[2] = 0; // palette colors
+    e[3] = 0; // reserved
+    e.writeUInt16LE(1, 4); // color planes
+    e.writeUInt16LE(32, 6); // bits per pixel
+    e.writeUInt32LE(data.length, 8);
+    e.writeUInt32LE(offset, 12);
+    entries.push(e);
+    offset += data.length;
+  }
+  return Buffer.concat([header, ...entries, ...pngs.map((p) => p.data)]);
+}
+
 // ---- write ------------------------------------------------------------------
 fs.mkdirSync(OUT, { recursive: true });
 for (const [state, shape] of Object.entries(SHAPES)) {
@@ -100,6 +125,11 @@ for (const [state, shape] of Object.entries(SHAPES)) {
     fs.writeFileSync(path.join(OUT, `${state}Template${suffix}.png`), render(shape, size, [0, 0, 0]));
     fs.writeFileSync(path.join(OUT, `${state}${suffix}.png`), render(shape, size, COLORS[state]));
   }
+  const icoSizes = [16, 20, 24, 32, 40, 48, 64];
+  fs.writeFileSync(
+    path.join(OUT, `${state}.ico`),
+    encodeIco(icoSizes.map((size) => ({ size, data: render(shape, size, COLORS[state]) })))
+  );
 }
 // A larger app icon for notifications / About.
 fs.writeFileSync(path.join(OUT, 'app.png'), render(SHAPES.running, 256, COLORS.running));

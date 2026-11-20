@@ -15,13 +15,18 @@ A small local stopwatch for Jira Cloud. Pick one of your assigned tickets, hit *
 ```
 jira-tempo-timer/
 ├── package.json          # scripts: dev / build / start
-├── start.sh              # one-command launcher (build if needed, run, open browser / --tray)
-├── autostart.sh          # install/uninstall start-at-login (macOS, Linux, Windows)
+├── start.sh / start.cmd  # one-command launcher (macOS/Linux / Windows)
+├── autostart.sh          # start at login on macOS / Linux
+├── autostart.cmd         # start at login on Windows (registry Run key, no admin needed)
 ├── electron/             # menu bar / system tray app
 │   ├── main.js           # tray icon + popover window, runs the server in-process
 │   ├── preload.cjs       # minimal bridge between the popover page and the tray
 │   └── icons/            # generated tray icons (macOS template + colored)
-├── scripts/make-icons.mjs  # regenerates electron/icons (npm run icons)
+├── scripts/
+│   ├── launch.mjs        # cross-platform launcher behind start.cmd
+│   ├── autostart-windows.mjs  # Windows login item behind autostart.cmd
+│   ├── build-if-stale.mjs     # rebuilds dist/ only when the UI sources changed
+│   └── make-icons.mjs    # regenerates electron/icons (npm run icons)
 ├── vite.config.js        # Vite + React + Tailwind; proxies /api → Express in dev
 ├── index.html
 ├── .env.example          # optional env overrides (copy to .env)
@@ -42,7 +47,9 @@ jira-tempo-timer/
 
 ## Setup
 
-**Requirements:** Node.js 20 or newer.
+**Requirements:** Node.js 20 or newer, on macOS, Linux or Windows 10/11.
+
+> **Windows:** use the `.cmd` files instead of the `.sh` ones (`start.cmd`, `autostart.cmd`), in Command Prompt, PowerShell, or by double-clicking. They do the same things. Git Bash also works with the `.sh` files.
 
 1. **Install:**
    ```bash
@@ -65,18 +72,19 @@ npm start
 ### Menu bar app
 
 ```bash
-./start.sh --tray     # or: npm run tray
+./start.sh --tray     # Windows: start.cmd --tray    (or, anywhere: npm run tray)
 ```
 
 - **Click** the stopwatch icon: open/close the popover (Esc or clicking elsewhere also closes it).
 - **Right-click**: Start/Pause, Stop & Log Work…, Show Timer, Settings…, Quit. On Linux, any click opens this menu.
 - **macOS:** the elapsed time shows next to the icon. The app has no Dock icon.
+- **Windows:** the elapsed time is in the icon's tooltip. New tray icons start hidden under the **^** arrow next to the clock; drag the stopwatch onto the taskbar to keep it visible. The popover opens above the icon.
 - The icon changes with the state: idle, running (filled), paused (two bars).
 - The popover keeps running while hidden, so the timer never stops because you closed it.
 
-The tray app starts the local server itself, or reuses one that's already running. Its timer is separate from the one in a browser tab (each keeps its own saved state), so pick one and stick with it.
+The tray app starts the local server itself (rebuilding the UI first if the sources changed, e.g. after `git pull`), or reuses one that's already running. Its timer is separate from the one in a browser tab (each keeps its own saved state), so pick one and stick with it.
 
-### One-command start: `start.sh`
+### One-command start: `start.sh` / `start.cmd`
 
 ```bash
 ./start.sh            # build if needed, run on http://localhost:3001 and open the browser
@@ -85,13 +93,27 @@ The tray app starts the local server itself, or reuses one that's already runnin
 ./start.sh --no-open  # don't open the browser
 ```
 
+On Windows, use `start.cmd` with the same options, e.g. `start.cmd --tray`.
+
 The script checks for Node 20+, and runs `npm install` / `vite build` only when something changed. If the app is already running, it just opens the browser. To launch it from anywhere, add an alias to `~/.bashrc` or `~/.zshrc`:
 
 ```bash
 alias timer='~/path/to/jira-tempo-timer/start.sh'
 ```
 
-### Start automatically at login: `autostart.sh`
+### Start automatically at login: `autostart.sh` / `autostart.cmd`
+
+**Windows:**
+
+```bat
+autostart.cmd install     :: menu bar app, now and at every login
+autostart.cmd status
+autostart.cmd uninstall   :: remove from login and quit the app
+```
+
+It adds a `JiraTempoTimer` entry under your per-user Run registry key (no admin rights needed), which you can also switch off in **Task Manager → Startup apps**. It launches the tray app directly, so no console window appears. Output goes to `logs\server.log`.
+
+**macOS / Linux:**
 
 ```bash
 ./autostart.sh install                # menu bar app, now and at every login
@@ -106,7 +128,7 @@ Output goes to `logs/server.log`.
 |---|---|
 | macOS | LaunchAgent `~/Library/LaunchAgents/com.jira-tempo-timer.plist` (restarts if it crashes, not after Quit) |
 | Linux | `~/.config/autostart` entry. `--server-only` uses a systemd user service (restarts on crash) when available |
-| Windows | Hidden launcher in your Startup folder; run the script from **Git Bash** |
+| Windows | Use `autostart.cmd` (above). From Git Bash, `./autostart.sh` forwards to it. |
 
 After a `git pull`, the next start rebuilds the UI automatically. If you move the folder or switch Node versions (e.g. via nvm), run `./autostart.sh install` again, because it records the paths at install time.
 
@@ -159,3 +181,6 @@ Any value set in `.env` overrides the Settings screen, where it shows as *locked
 | `Tempo 400 … not allowed / period closed` | The timesheet period is locked in Tempo; ask an admin, or change the start date. |
 | "Could not decrypt config" in the server log | `CONFIG_SECRET` or `data/.key` changed. Re-enter your settings to overwrite the file. |
 | Port already in use | Set `PORT=3002` in `.env`. Vite's proxy picks up the same variable. |
+| Windows: no tray icon | Click the **^** next to the clock, or **Settings → Personalization → Taskbar → Other system tray icons** and turn on *Electron* / *Jira Tempo Timer*. |
+| Windows: `.sh` scripts fail in Git Bash with `$'\r': command not found` | Your checkout converted line endings. Run `git rm --cached -r . && git reset --hard` once; `.gitattributes` keeps them LF from then on. |
+| Windows: `start.cmd` window closes immediately | Run it from a Command Prompt to see the error, or check `logs\server.log` for the tray app. |

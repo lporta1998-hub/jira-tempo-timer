@@ -12,10 +12,10 @@
  *    custom header cross-origin without a CORS preflight, which this server never
  *    approves, so other websites you visit cannot drive this API.
  */
-import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import dotenv from 'dotenv';
 import express from 'express';
 
 import { loadConfig, saveConfig, publicConfig, envLockedFields } from './config.js';
@@ -34,6 +34,9 @@ import { appendHistory, readHistory } from './history.js';
 import { localParts, todayLocal } from './time.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Load .env from the project folder, not the current directory (at Windows login
+// the current directory is C:\Windows\System32).
+dotenv.config({ path: path.resolve(__dirname, '..', '.env'), quiet: true });
 const PORT = Number(process.env.PORT) || 3001;
 const HOST = process.env.HOST || '127.0.0.1';
 const ALLOWED_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -293,7 +296,9 @@ export function startServer({ port = PORT, host = HOST } = {}) {
   });
 }
 
-const runDirectly = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+// Windows paths are case-insensitive (c:\ vs C:\), so compare them that way there.
+const samePath = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
+const runDirectly = Boolean(process.argv[1]) && samePath(path.resolve(process.argv[1]), fileURLToPath(import.meta.url));
 if (runDirectly) {
   startServer().catch((err) => {
     console.error(`[jira-tempo-timer] Could not start: ${err.message}`);

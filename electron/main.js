@@ -9,42 +9,83 @@
  * The web UI stays the single source of truth for the timer. It reports its
  * state over IPC (see preload.cjs), and the tray sends commands back. The
  * popover window is hidden rather than closed, so the timer keeps running.
+ *
+ * Command-line switches:
+ *   --background   append all output to logs/server.log (used when started at login)
+ *   --quit         ask an already running copy to quit (used by uninstall)
  */
-import 'dotenv/config';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { format } from 'node:util';
+import dotenv from 'dotenv';
 import { app, BrowserWindow, Tray, Menu, nativeImage, screen, shell, ipcMain } from 'electron';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const APP_DIR = path.resolve(__dirname, '..');
+
+// Started at login, the working directory can be anything (C:\Windows\System32 on
+// Windows), so anchor everything to the project folder.
+process.chdir(APP_DIR);
+dotenv.config({ path: path.join(APP_DIR, '.env'), quiet: true });
+
+if (process.argv.includes('--background')) logToFile(path.join(APP_DIR, 'logs', 'server.log'));
+
 const PORT = Number(process.env.PORT) || 3001;
 // JTT_URL lets you point the tray at the Vite dev server (http://localhost:5173).
 const APP_URL = (process.env.JTT_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
+// Internal health checks use the IPv4 address the server binds to (on Windows,
+// "localhost" may resolve to ::1 first).
+const API_URL = APP_URL.replace('://localhost', '://127.0.0.1');
 const WIDTH = 360;
 const MAX_HEIGHT = 640;
 const isMac = process.platform === 'darwin';
 const isLinux = process.platform === 'linux';
+const isWindows = process.platform === 'win32';
 
 let tray = null;
 let win = null;
 let quitting = false;
 let lastShownAt = 0;
+let lastBlurHideAt = 0;
 /** Mirror of the page's timer, used for the tray title and menu. */
 let timer = { ticket: null, runningSince: null, accumulatedSeconds: 0 };
 
-// Only one copy: launching again just shows the popover.
-if (!app.requestSingleInstanceLock()) {
+// Only one copy: launching again just shows the popover (or quits it, with --quit).
+const quitRequested = process.argv.includes('--quit');
+if (!app.requestSingleInstanceLock() || quitRequested) {
   app.quit();
 } else {
-  app.on('second-instance', () => showWindow());
+  app.on('second-instance', (_event, argv) => {
+    if (argv.includes('--quit')) app.quit();
+    else showWindow();
+  });
   app.whenReady().then(init).catch((err) => {
     console.error(err);
     app.quit();
   });
 }
 
+/** Sends console output to a log file (GUI apps started at login have no terminal). */
+function logToFile(file) {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    // Start fresh once the log passes ~5 MB.
+    if (fs.existsSync(file) && fs.statSync(file).size > 5_000_000) fs.renameSync(file, `${file}.old`);
+    const out = fs.createWriteStream(file, { flags: 'a' });
+    for (const level of ['log', 'info', 'warn', 'error']) {
+      console[level] = (...args) => out.write(`${format(...args)}\n`);
+    }
+    console.log(`=== ${new Date().toISOString()} menu bar app starting (background) ===`);
+  } catch {
+    /* logging is best-effort */
+  }
+}
+
 // Menu bar apps don't get a Dock icon.
 if (isMac) app.dock?.hide();
 app.setName('Jira Tempo Timer');
+if (isWindows) app.setAppUserModelId('com.jira-tempo-timer');
 
 // Keep running when the popover is hidden.
 app.on('window-all-closed', () => {});
@@ -54,7 +95,7 @@ app.on('before-quit', () => {
 
 async function serverIsUp() {
   try {
-    const res = await fetch(`${APP_URL}/api/health`, {
+    const res = await fetch(`${API_URL}/api/health`, {
       headers: { 'X-JTT-Client': '1' },
       signal: AbortSignal.timeout(1500),
     });
@@ -66,6 +107,13 @@ async function serverIsUp() {
 
 async function init() {
   if (!process.env.JTT_URL && !(await serverIsUp())) {
+    // Rebuild the UI first if the sources changed (e.g. after `git pull`).
+    try {
+      const { buildUiIfStale } = await import('../scripts/build-if-stale.mjs');
+      if (await buildUiIfStale()) console.log('[tray] UI rebuilt');
+    } catch (err) {
+      console.error('[tray] UI build failed; using the existing build.', err);
+    }
     const { startServer } = await import('../server/index.js');
     await startServer({ port: PORT });
   }
@@ -75,7 +123,7 @@ async function init() {
 
   // First run (nothing configured yet): open the popover so Settings is visible.
   try {
-    const res = await fetch(`${APP_URL}/api/settings`, { headers: { 'X-JTT-Client': '1' } });
+    const res = await fetch(`${API_URL}/api/settings`, { headers: { 'X-JTT-Client': '1' } });
     if (!(await res.json()).jiraConfigured) win.once('ready-to-show', () => showWindow());
   } catch {
     /* the page will show the error itself */
@@ -130,7 +178,10 @@ function createWindow() {
   // Behave like a popover: hide when you click elsewhere.
   win.on('blur', () => {
     // Ignore the blur that can arrive right after showing it from a tray click.
-    if (Date.now() - lastShownAt > 300 && !win.webContents.isDevToolsOpened()) win.hide();
+    if (Date.now() - lastShownAt > 300 && !win.webContents.isDevToolsOpened()) {
+      win.hide();
+      lastBlurHideAt = Date.now();
+    }
   });
   win.on('close', (event) => {
     if (!quitting) {
@@ -170,7 +221,9 @@ function showWindow() {
 
 function toggleWindow() {
   if (win?.isVisible()) win.hide();
-  else showWindow();
+  // Clicking the tray icon first blurs (and hides) the popover, then fires "click".
+  // Without this check that click would immediately reopen it (seen on Windows).
+  else if (Date.now() - lastBlurHideAt > 250) showWindow();
 }
 
 function send(command) {
@@ -227,8 +280,10 @@ const icons = {};
 function icon(state) {
   const name = isMac ? `${state}Template` : state;
   if (!icons[name]) {
-    // nativeImage picks up the @2x file automatically on high-DPI screens.
-    const img = nativeImage.createFromPath(path.join(__dirname, 'icons', `${name}.png`));
+    // Windows: a multi-size .ico stays sharp at 125%/150% scaling.
+    // Elsewhere nativeImage picks up the @2x PNG automatically on high-DPI screens.
+    const file = isWindows ? `${name}.ico` : `${name}.png`;
+    const img = nativeImage.createFromPath(path.join(__dirname, 'icons', file));
     if (isMac) img.setTemplateImage(true);
     icons[name] = img;
   }

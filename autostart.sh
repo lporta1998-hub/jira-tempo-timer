@@ -10,7 +10,7 @@
 # What it uses on each OS:
 #   macOS    LaunchAgent   ~/Library/LaunchAgents/com.jira-tempo-timer.plist
 #   Linux    ~/.config/autostart entry (server-only: systemd user service if available)
-#   Windows  a hidden launcher in your Startup folder (run this from Git Bash)
+#   Windows  use autostart.cmd (this script forwards to it from Git Bash)
 #
 # Output goes to logs/server.log. After a `git pull`, it rebuilds itself on the
 # next start.
@@ -200,43 +200,14 @@ linux_uninstall() {
 
 linux_registered() { [ -f "$UNIT" ] || [ -f "$DESKTOP" ]; }
 
-# ----------------------------------------------------------------- Windows
-win_startup_file() {
-  local appdata
-  appdata="$(cygpath -u "$APPDATA")"
-  echo "$appdata/Microsoft/Windows/Start Menu/Programs/Startup/$NAME.vbs"
-}
-
-win_install() {
-  local vbs bash_exe app_win
-  vbs="$(win_startup_file)"
-  bash_exe="$(cygpath -w "$(command -v bash)")"
-  app_win="$(cygpath -w "$APP_DIR")"
-  # VBScript runs Git Bash with a hidden window (0) so no console pops up at login.
-  cat >"$vbs" <<EOF
-' Starts Jira Tempo Timer in the background at login. Remove with: ./autostart.sh uninstall
-Set sh = CreateObject("WScript.Shell")
-sh.CurrentDirectory = "$app_win"
-sh.Run """$bash_exe"" -lc ""./start.sh $ARGS_STR""", 0, False
-EOF
-  echo "Installed Startup launcher: $(cygpath -w "$vbs")"
-  stop_all
-  wscript.exe "$(cygpath -w "$vbs")"
-}
-
-win_uninstall() {
-  rm -f "$(win_startup_file)"
-  stop_all
-  echo "Removed Startup launcher. (If it's still running, quit it from the tray icon.)"
-}
-
-win_registered() { [ -f "$(win_startup_file)" ]; }
-
 # --------------------------------------------------------------------- main
 case "$(uname -s)" in
   Darwin) OS=mac ;;
   Linux) OS=linux ;;
-  MINGW* | MSYS* | CYGWIN*) OS=win ;;
+  MINGW* | MSYS* | CYGWIN*)
+    # Windows (Git Bash): same as autostart.cmd, which uses the registry Run key.
+    exec node "$APP_DIR/scripts/autostart-windows.mjs" "$@"
+    ;;
   *)
     echo "Unsupported OS: $(uname -s)" >&2
     exit 1

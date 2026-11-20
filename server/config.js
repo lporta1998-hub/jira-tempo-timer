@@ -46,7 +46,14 @@ export function writeFileSecure(file, contents) {
   ensureDataDir();
   const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, contents, { mode: 0o600 });
-  fs.renameSync(tmp, file);
+  try {
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    // Windows: rename can fail while antivirus or an indexer briefly holds the file.
+    if (!['EPERM', 'EACCES', 'EBUSY'].includes(err.code)) throw err;
+    fs.copyFileSync(tmp, file);
+    fs.rmSync(tmp, { force: true });
+  }
 }
 
 function getKey() {
