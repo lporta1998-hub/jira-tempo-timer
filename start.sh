@@ -5,6 +5,7 @@
 #   ./start.sh            build if needed, run on http://localhost:3001, open browser
 #   ./start.sh --dev      hot-reload dev mode on http://localhost:5173
 #   ./start.sh --no-open  don't open the browser
+#   ./start.sh --tray     menu bar / system tray app (small popover, no browser)
 #   ./start.sh --background  no browser, log to logs/server.log (for autostart)
 #
 # Safe to run repeatedly: it only reinstalls / rebuilds when something changed,
@@ -16,9 +17,11 @@ cd "$(dirname "$0")"
 
 DEV=0
 OPEN=1
+TRAY=0
 for arg in "$@"; do
   case "$arg" in
     --dev) DEV=1 ;;
+    --tray) TRAY=1 ;;
     --no-open) OPEN=0 ;;
     --background)
       # Used by autostart: no browser, all output appended to logs/server.log.
@@ -32,7 +35,7 @@ for arg in "$@"; do
       echo "=== $(date '+%Y-%m-%d %H:%M:%S') starting (background) ==="
       ;;
     -h | --help)
-      sed -n '3,11p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -77,7 +80,7 @@ is_up() {
 }
 
 # --- Already running? Just open it. -------------------------------------------
-if command -v curl >/dev/null 2>&1 && is_up "$URL"; then
+if [ "$TRAY" -eq 0 ] && command -v curl >/dev/null 2>&1 && is_up "$URL"; then
   echo "Jira Tempo Timer is already running at $URL"
   open_browser "$URL"
   exit 0
@@ -90,7 +93,7 @@ if [ ! -d node_modules ] || [ package-lock.json -nt node_modules/.package-lock.j
 fi
 
 # --- Open the browser once the app answers (runs in the background) ------------
-if [ "$OPEN" -eq 1 ]; then
+if [ "$OPEN" -eq 1 ] && [ "$TRAY" -eq 0 ]; then
   (
     for _ in $(seq 1 60); do
       if command -v curl >/dev/null 2>&1; then
@@ -113,6 +116,14 @@ if [ ! -f dist/index.html ] ||
   [ -n "$(find src index.html vite.config.js package-lock.json -newer dist/index.html 2>/dev/null | head -n1)" ]; then
   echo "Building the UI…"
   npm run build --silent
+fi
+
+if [ "$TRAY" -eq 1 ]; then
+  echo "Starting the menu bar app (server at $URL)…"
+  # Linux as root (e.g. containers) needs Chromium's sandbox disabled.
+  EXTRA=()
+  if [ "$(uname -s)" = Linux ] && [ "$(id -u)" -eq 0 ]; then EXTRA=(--no-sandbox); fi
+  exec ./node_modules/.bin/electron . ${EXTRA[@]+"${EXTRA[@]}"}
 fi
 
 echo "Starting Jira Tempo Timer at $URL (Ctrl+C to stop)…"

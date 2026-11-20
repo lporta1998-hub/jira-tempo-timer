@@ -1,6 +1,9 @@
 # ⏱️ Jira Tempo Timer
 
-A small local stopwatch for Jira Cloud. Pick one of your assigned tickets, hit **Start**, then hit **Stop & Log Work**. The time goes straight to **Tempo Timesheets**, or to **Jira's built-in worklogs** if you haven't set a Tempo token.
+A small local stopwatch for Jira Cloud. Pick one of your assigned tickets, hit **▶**, then hit **Log**. The time goes straight to **Tempo Timesheets**, or to **Jira's built-in worklogs** if you haven't set a Tempo token.
+
+- **Menu bar / system tray app:** a stopwatch icon with the running time next to it (macOS). Click it for a small popover; right-click for Start/Pause, Stop & Log, Settings and Quit.
+- Or use it in the browser: the same compact card at http://localhost:3001.
 
 - React + Vite + Tailwind UI, with a small Express server that holds your tokens and makes the Jira/Tempo calls (no CORS problems, and tokens never reach the browser)
 - The timer survives page refreshes, closed tabs and browser restarts (saved in `localStorage`)
@@ -12,8 +15,13 @@ A small local stopwatch for Jira Cloud. Pick one of your assigned tickets, hit *
 ```
 jira-tempo-timer/
 ├── package.json          # scripts: dev / build / start
-├── start.sh              # one-command launcher (build if needed, run, open browser)
+├── start.sh              # one-command launcher (build if needed, run, open browser / --tray)
 ├── autostart.sh          # install/uninstall start-at-login (macOS, Linux, Windows)
+├── electron/             # menu bar / system tray app
+│   ├── main.js           # tray icon + popover window, runs the server in-process
+│   ├── preload.cjs       # minimal bridge between the popover page and the tray
+│   └── icons/            # generated tray icons (macOS template + colored)
+├── scripts/make-icons.mjs  # regenerates electron/icons (npm run icons)
 ├── vite.config.js        # Vite + React + Tailwind; proxies /api → Express in dev
 ├── index.html
 ├── .env.example          # optional env overrides (copy to .env)
@@ -27,8 +35,8 @@ jira-tempo-timer/
 │   ├── main.jsx, App.jsx, index.css
 │   ├── lib/              # api.js (fetch wrapper), time.js, storage.js
 │   ├── hooks/            # useTimer.js (persisted stopwatch), usePendingQueue.js
-│   └── components/       # TicketPicker, TimerCard, LogDialog, PendingQueue,
-│                         # TodayLogs, Settings, Toasts
+│   └── components/       # TicketPicker, TimerRow, LogForm, PendingQueue,
+│                         # TodayLogs, Settings, Toasts, Icons, ConfirmButton
 └── data/                 # created at runtime, git-ignored, chmod 700
 ```
 
@@ -54,10 +62,25 @@ jira-tempo-timer/
 npm start
 ```
 
+### Menu bar app
+
+```bash
+./start.sh --tray     # or: npm run tray
+```
+
+- **Click** the stopwatch icon: open/close the popover (Esc or clicking elsewhere also closes it).
+- **Right-click**: Start/Pause, Stop & Log Work…, Show Timer, Settings…, Quit. On Linux, any click opens this menu.
+- **macOS:** the elapsed time shows next to the icon. The app has no Dock icon.
+- The icon changes with the state: idle, running (filled), paused (two bars).
+- The popover keeps running while hidden, so the timer never stops because you closed it.
+
+The tray app starts the local server itself, or reuses one that's already running. Its timer is separate from the one in a browser tab (each keeps its own saved state), so pick one and stick with it.
+
 ### One-command start: `start.sh`
 
 ```bash
 ./start.sh            # build if needed, run on http://localhost:3001 and open the browser
+./start.sh --tray     # menu bar app instead of the browser
 ./start.sh --dev      # hot-reload dev mode on http://localhost:5173
 ./start.sh --no-open  # don't open the browser
 ```
@@ -71,17 +94,18 @@ alias timer='~/path/to/jira-tempo-timer/start.sh'
 ### Start automatically at login: `autostart.sh`
 
 ```bash
-./autostart.sh install     # start now and at every login (in the background, no browser)
-./autostart.sh status      # is it registered / running?
-./autostart.sh uninstall   # stop it and remove it from login
+./autostart.sh install                # menu bar app, now and at every login
+./autostart.sh install --server-only  # just the background server; use http://localhost:3001
+./autostart.sh status                 # is it registered / running?
+./autostart.sh uninstall              # stop it and remove it from login
 ```
 
-Then bookmark http://localhost:3001. Output goes to `logs/server.log`.
+Output goes to `logs/server.log`.
 
 | OS | Mechanism |
 |---|---|
-| macOS | LaunchAgent `~/Library/LaunchAgents/com.jira-tempo-timer.plist` (restarts if it crashes) |
-| Linux | systemd user service `jira-tempo-timer` (restarts if it crashes); falls back to `~/.config/autostart` without systemd |
+| macOS | LaunchAgent `~/Library/LaunchAgents/com.jira-tempo-timer.plist` (restarts if it crashes, not after Quit) |
+| Linux | `~/.config/autostart` entry. `--server-only` uses a systemd user service (restarts on crash) when available |
 | Windows | Hidden launcher in your Startup folder; run the script from **Git Bash** |
 
 After a `git pull`, the next start rebuilds the UI automatically. If you move the folder or switch Node versions (e.g. via nvm), run `./autostart.sh install` again, because it records the paths at install time.
@@ -110,14 +134,14 @@ Any value set in `.env` overrides the Settings screen, where it shows as *locked
 
 - **Tickets:** JQL `assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC` through `POST /rest/api/3/search/jql`. If your site doesn't have that endpoint, it falls back to the older `/rest/api/3/search`. Each ticket keeps its `key`, `summary` and numeric `id` (Tempo needs the numeric id). To log time on a ticket you're *not* assigned to, type its full key (e.g. `OPS-42`) and choose **Look up**.
 - **Timer state** lives in `localStorage` under `jtt.timer.v1` as `{ ticket, runningSince, accumulatedSeconds, firstStartedAt }`. Elapsed time is calculated from timestamps, so it stays correct even if the laptop sleeps. While time is tracked, the ticket is locked; log or discard the time to switch tickets.
-- **Stop & Log Work** pauses the timer and opens a dialog. You can add a description and adjust the duration or start time before submitting. Duration is rounded **up** to your rounding setting (minimum 1 minute, because Jira and Tempo reject anything shorter). The server then sends:
+- **Log** pauses the timer and swaps the timer row for a small form. Add a description (Enter submits, Esc goes back) and adjust the duration or start time if needed. Duration is rounded **up** to your rounding setting (minimum 1 minute, because Jira and Tempo reject anything shorter). The server then sends:
   ```json
   POST https://api.tempo.io/4/worklogs
   { "issueId": 10001, "authorAccountId": "…", "startDate": "2026-11-20",
     "startTime": "09:55:13", "timeSpentSeconds": 1800, "description": "Implemented feature logic" }
   ```
   An empty description becomes `Working on issue KEY-1` (Tempo's own default).
-- **Failure handling:** if submission fails (local server down, network error, 401, or a Tempo validation error), the worklog goes into the pending queue (`jtt.pending.v1`) with the error message. The timer resets, and a yellow panel offers **Retry**, **Retry all** and **Discard**.
+- **Failure handling:** if submission fails (local server down, network error, 401, or a Tempo validation error), the worklog goes into the pending queue (`jtt.pending.v1`) with the error message. The timer resets, and a yellow "unsent worklogs" bar offers **Retry** (expand it to retry or discard single entries).
 
 ## Security notes
 

@@ -2,16 +2,16 @@
 # ---------------------------------------------------------------------------
 # Start Jira Tempo Timer automatically when you log in.
 #
-#   ./autostart.sh install     register it to start at login (and start it now)
-#   ./autostart.sh uninstall   remove it from login and stop it
-#   ./autostart.sh status      show whether it is registered and running
+#   ./autostart.sh install                start the menu bar app at login (and now)
+#   ./autostart.sh install --server-only  only the background server (use the browser)
+#   ./autostart.sh uninstall              remove it from login and stop it
+#   ./autostart.sh status                 show whether it is registered and running
 #
 # What it uses on each OS:
 #   macOS    LaunchAgent   ~/Library/LaunchAgents/com.jira-tempo-timer.plist
-#   Linux    systemd user service (or ~/.config/autostart if there's no systemd)
+#   Linux    ~/.config/autostart entry (server-only: systemd user service if available)
 #   Windows  a hidden launcher in your Startup folder (run this from Git Bash)
 #
-# The app runs in the background on http://localhost:3001 (or your PORT).
 # Output goes to logs/server.log. After a `git pull`, it rebuilds itself on the
 # next start.
 # ---------------------------------------------------------------------------
@@ -22,6 +22,12 @@ NAME="jira-tempo-timer"
 LABEL="com.jira-tempo-timer"
 START="$APP_DIR/start.sh"
 LOG="$APP_DIR/logs/server.log"
+
+# Menu bar app by default; `install --server-only` runs just the server.
+MODE=tray
+[ "${2:-}" = "--server-only" ] && MODE=server
+if [ "$MODE" = tray ]; then START_ARGS=(--tray --background); else START_ARGS=(--background); fi
+ARGS_STR="${START_ARGS[*]}"
 
 usage() { sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//'; }
 
@@ -68,13 +74,14 @@ prepare() {
   mkdir -p "$APP_DIR/logs"
 }
 
-# Stops an instance started by hand (./start.sh), so the login service can own the port.
-stop_manual_instance() {
-  if is_running; then
-    pkill -f "node server/index.js" 2>/dev/null || true
-    sleep 1
-  fi
+# Stops copies started by hand (./start.sh, the menu bar app), so the login item can own the port.
+stop_all() {
+  pkill -f "node server/index.js" 2>/dev/null || true
+  # Only the main Electron process (its helpers exit with it): ".../electron ." or ".../Electron ."
+  pkill -f "$APP_DIR/node_modules/electron/dist/.*lectron \\." 2>/dev/null || true
+  sleep 1
 }
+stop_manual_instance() { if is_running; then stop_all; fi; }
 
 xml_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' <<<"$1"; }
 
@@ -93,7 +100,7 @@ mac_install() {
   <array>
     <string>/bin/bash</string>
     <string>$(xml_escape "$START")</string>
-    <string>--background</string>
+$(for a in "${START_ARGS[@]}"; do echo "    <string>$a</string>"; done)
   </array>
   <key>WorkingDirectory</key><string>$(xml_escape "$APP_DIR")</string>
   <key>EnvironmentVariables</key>
@@ -115,6 +122,7 @@ EOF
 mac_uninstall() {
   launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || launchctl unload -w "$PLIST" 2>/dev/null || true
   rm -f "$PLIST"
+  stop_all
   echo "Removed LaunchAgent."
 }
 
@@ -128,7 +136,9 @@ DESKTOP="$HOME/.config/autostart/$NAME.desktop"
 has_systemd_user() { command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; }
 
 linux_install() {
-  if has_systemd_user; then
+  # The tray app needs your desktop session (display), so it always uses XDG autostart.
+  if [ "$MODE" = server ] && has_systemd_user; then
+    rm -f "$DESKTOP"
     mkdir -p "$UNIT_DIR"
     cat >"$UNIT" <<EOF
 [Unit]
@@ -139,7 +149,7 @@ After=network-online.target
 Type=simple
 WorkingDirectory=$APP_DIR
 Environment="PATH=$(service_path)"
-ExecStart=/bin/bash "$START" --background
+ExecStart=/bin/bash "$START" $ARGS_STR
 # Restart if it crashes, but not after a clean exit.
 Restart=on-failure
 RestartSec=5
@@ -151,7 +161,11 @@ EOF
     systemctl --user enable --now "$NAME.service"
     echo "Installed systemd user service: $UNIT"
   else
-    # Desktop sessions without systemd (or WSL): XDG autostart entry.
+    # Desktop session login item (tray app, or server without systemd).
+    if [ -f "$UNIT" ]; then
+      systemctl --user disable --now "$NAME.service" 2>/dev/null || true
+      rm -f "$UNIT"
+    fi
     mkdir -p "$(dirname "$DESKTOP")"
     local q="${START//\"/\\\"}"
     cat >"$DESKTOP" <<EOF
@@ -159,14 +173,14 @@ EOF
 Type=Application
 Name=Jira Tempo Timer
 Comment=Local time tracker for Jira and Tempo
-Exec=/bin/bash "$q" --background
+Exec=/bin/bash "$q" $ARGS_STR
 X-GNOME-Autostart-enabled=true
 NoDisplay=true
 EOF
     echo "Installed autostart entry: $DESKTOP"
-    echo "(No systemd user session found, so it starts with your desktop login, without crash restarts.)"
-    stop_manual_instance
-    PATH="$(service_path)" nohup /bin/bash "$START" --background >/dev/null 2>&1 &
+    [ "$MODE" = server ] && echo "(No systemd user session found, so it starts with your desktop login, without crash restarts.)"
+    stop_all
+    PATH="$(service_path)" nohup /bin/bash "$START" "${START_ARGS[@]}" >/dev/null 2>&1 &
   fi
 }
 
@@ -179,9 +193,9 @@ linux_uninstall() {
   fi
   if [ -f "$DESKTOP" ]; then
     rm -f "$DESKTOP"
-    pkill -f "node server/index.js" 2>/dev/null || true
     echo "Removed autostart entry."
   fi
+  stop_all
 }
 
 linux_registered() { [ -f "$UNIT" ] || [ -f "$DESKTOP" ]; }
@@ -203,18 +217,17 @@ win_install() {
 ' Starts Jira Tempo Timer in the background at login. Remove with: ./autostart.sh uninstall
 Set sh = CreateObject("WScript.Shell")
 sh.CurrentDirectory = "$app_win"
-sh.Run """$bash_exe"" -lc ""./start.sh --background""", 0, False
+sh.Run """$bash_exe"" -lc ""./start.sh $ARGS_STR""", 0, False
 EOF
   echo "Installed Startup launcher: $(cygpath -w "$vbs")"
-  stop_manual_instance
+  stop_all
   wscript.exe "$(cygpath -w "$vbs")"
 }
 
 win_uninstall() {
   rm -f "$(win_startup_file)"
-  taskkill //F //FI "WINDOWTITLE eq $NAME" >/dev/null 2>&1 || true
-  pkill -f "server/index.js" 2>/dev/null || true
-  echo "Removed Startup launcher. (If it's still running, stop node.exe in Task Manager or restart.)"
+  stop_all
+  echo "Removed Startup launcher. (If it's still running, quit it from the tray icon.)"
 }
 
 win_registered() { [ -f "$(win_startup_file)" ]; }
@@ -234,11 +247,15 @@ case "${1:-}" in
   install)
     echo "Preparing (npm install + build)…"
     prepare
-    [ "$OS" = mac ] && stop_manual_instance
-    [ "$OS" = linux ] && has_systemd_user && stop_manual_instance
+    [ "$OS" = mac ] && stop_all
+    [ "$OS" = linux ] && [ "$MODE" = server ] && has_systemd_user && stop_manual_instance
     "${OS}_install"
     wait_until_up
-    echo "It will now start automatically each time you log in."
+    if [ "$MODE" = tray ]; then
+      echo "The menu bar app will now start each time you log in. Look for the stopwatch icon."
+    else
+      echo "The server will now start each time you log in."
+    fi
     ;;
   uninstall)
     "${OS}_uninstall"

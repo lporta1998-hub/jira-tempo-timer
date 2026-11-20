@@ -74,6 +74,7 @@ export function useTimer() {
     hasTime: elapsedSeconds > 0 || Boolean(state.runningSince),
     elapsedSeconds,
     firstStartedAt: state.firstStartedAt,
+    raw: state, // persisted fields, mirrored to the menu bar app
     setTicket,
     start,
     pause,

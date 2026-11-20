@@ -1,15 +1,23 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api } from './lib/api.js';
 import { formatHMS } from './lib/time.js';
 import { useTimer } from './hooks/useTimer.js';
 import { usePendingQueue } from './hooks/usePendingQueue.js';
 import TicketPicker from './components/TicketPicker.jsx';
-import TimerCard from './components/TimerCard.jsx';
-import LogDialog from './components/LogDialog.jsx';
+import TimerRow from './components/TimerRow.jsx';
+import LogForm from './components/LogForm.jsx';
 import PendingQueue from './components/PendingQueue.jsx';
 import TodayLogs from './components/TodayLogs.jsx';
 import Settings from './components/Settings.jsx';
 import Toasts from './components/Toasts.jsx';
+import { GearIcon } from './components/Icons.jsx';
+
+/** Present only inside the menu bar app (see electron/preload.cjs). */
+const bridge = window.trayBridge;
+const inTray = Boolean(bridge);
+if (inTray) document.documentElement.classList.add('tray');
+
+const TICKETS_STALE_MS = 5 * 60_000;
 
 export default function App() {
   const timer = useTimer();
@@ -21,10 +29,12 @@ export default function App() {
   const [tickets, setTickets] = useState([]);
   const [ticketsLoading, setTicketsLoading] = useState(false);
   const [ticketsError, setTicketsError] = useState('');
-  const [logging, setLogging] = useState(null); // { elapsedSeconds, startedAt } while the dialog is open
+  const [logging, setLogging] = useState(null); // { elapsedSeconds, startedAt } while the log form is shown
   const [submitting, setSubmitting] = useState(false);
   const [todayKey, setTodayKey] = useState(0);
   const [toasts, setToasts] = useState([]);
+  const cardRef = useRef(null);
+  const ticketsLoadedAt = useRef(0);
 
   // ---- toasts
   const dismiss = useCallback((id) => setToasts((t) => t.filter((x) => x.id !== id)), []);
@@ -32,7 +42,7 @@ export default function App() {
     (message, kind = 'info') => {
       const id = crypto.randomUUID();
       setToasts((t) => [...t, { id, message, kind }]);
-      setTimeout(() => dismiss(id), kind === 'error' ? 8000 : 4000);
+      setTimeout(() => dismiss(id), kind === 'error' ? 8000 : 3500);
     },
     [dismiss]
   );
@@ -49,6 +59,7 @@ export default function App() {
 
   // ---- tickets
   const loadTickets = useCallback(async () => {
+    ticketsLoadedAt.current = Date.now();
     setTicketsLoading(true);
     setTicketsError('');
     try {
@@ -64,6 +75,13 @@ export default function App() {
     if (settings?.jiraConfigured) loadTickets();
   }, [settings?.jiraConfigured, settings?.jiraBaseUrl, settings?.jiraEmail, loadTickets]);
 
+  // Refresh the ticket list when the window comes back after a while (e.g. reopening the popover).
+  useEffect(() => {
+    const onFocus = () => settings?.jiraConfigured && Date.now() - ticketsLoadedAt.current > TICKETS_STALE_MS && loadTickets();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [settings?.jiraConfigured, loadTickets]);
+
   const lookupTicket = useCallback(
     async (key) => {
       try {
@@ -76,26 +94,60 @@ export default function App() {
     [toast]
   );
 
-  // ---- show the running timer in the browser tab title
+  // ---- browser tab title shows the running timer
   useEffect(() => {
+    if (inTray) return;
     document.title = timer.hasTime
       ? `${timer.running ? '▶' : '❚❚'} ${formatHMS(timer.elapsedSeconds)} · ${timer.ticket?.key ?? ''}`
       : 'Jira Tempo Timer';
   }, [timer.hasTime, timer.running, timer.elapsedSeconds, timer.ticket]);
 
-  // ---- warn before closing while the timer runs (time is still saved, this is just a reminder)
+  // ---- browser only: remind before closing the tab while running (time is saved either way)
   useEffect(() => {
-    if (!timer.running) return undefined;
+    if (inTray || !timer.running) return undefined;
     const handler = (e) => e.preventDefault();
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
   }, [timer.running]);
 
+  // ---- menu bar: report timer state, fit the popover to the content, handle Esc
+  const { ticket, runningSince, accumulatedSeconds } = timer.raw;
+  useEffect(() => {
+    bridge?.sendState({ ticket, runningSince, accumulatedSeconds });
+  }, [ticket, runningSince, accumulatedSeconds]);
+
+  useLayoutEffect(() => {
+    if (!bridge || !cardRef.current) return undefined;
+    const el = cardRef.current;
+    const ro = new ResizeObserver(() => bridge.resize(el.getBoundingClientRect().height));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!bridge) return undefined;
+    const onKey = (e) => e.key === 'Escape' && !e.defaultPrevented && bridge.hide();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   // ---- stop & log
-  function openLogDialog() {
+  function openLogForm() {
     timer.pause();
     setLogging({ elapsedSeconds: timer.elapsedSeconds, startedAt: timer.firstStartedAt });
   }
+
+  // Commands from the tray menu. A ref keeps the handler current without re-subscribing.
+  const onCommand = useRef();
+  onCommand.current = (command) => {
+    if (command === 'toggle') timer.running ? timer.pause() : timer.start();
+    if (command === 'stop' && timer.hasTime && !logging) {
+      setView('tracker');
+      openLogForm();
+    }
+    if (command === 'settings') setView('settings');
+  };
+  useEffect(() => bridge?.onCommand((c) => onCommand.current(c)), []);
 
   async function submitWorklog(worklog) {
     setSubmitting(true);
@@ -106,7 +158,7 @@ export default function App() {
     } catch (err) {
       // Never lose time: park it in the pending queue for a retry.
       pending.add(worklog, err.message);
-      toast(`Could not log time — saved locally for retry. ${err.message}`, 'error');
+      toast(`Couldn't log — saved for retry. ${err.message}`, 'error');
     } finally {
       timer.reset();
       setLogging(null);
@@ -139,95 +191,69 @@ export default function App() {
     toast(failed ? `${ok} logged, ${failed} still failing` : `All ${ok} logged`, failed ? 'error' : 'success');
   }
 
-  function discard() {
-    if (confirm(`Discard ${formatHMS(timer.elapsedSeconds)} tracked on ${timer.ticket?.key}?`)) timer.reset();
-  }
-
   // ---- render
-  if (settingsError) {
-    return (
-      <main className="mx-auto max-w-xl p-6">
-        <div className="card text-rose-600">{settingsError}</div>
-      </main>
-    );
-  }
-
   return (
-    <main className="mx-auto max-w-3xl space-y-5 p-4 sm:p-6">
-      <header className="flex items-center justify-between">
-        <h1 className="text-xl font-bold">⏱️ Jira Tempo Timer</h1>
-        <div className="flex items-center gap-3">
-          {settings && (
-            <span className="rounded-full bg-slate-200 px-2.5 py-0.5 text-xs dark:bg-slate-800">
-              Logging to {settings.mode === 'tempo' ? 'Tempo' : 'Jira worklogs'}
-            </span>
-          )}
-          {view === 'tracker' && (
-            <button className="btn-ghost" onClick={() => setView('settings')}>
-              ⚙ Settings
-            </button>
-          )}
-        </div>
-      </header>
+    <div className={inTray ? '' : 'flex min-h-screen justify-center p-3 sm:pt-16'}>
+      <main
+        ref={cardRef}
+        className={`w-full self-start bg-white dark:bg-slate-900 ${
+          inTray ? '' : 'max-w-sm overflow-hidden rounded-xl border border-slate-200 shadow-sm dark:border-slate-800'
+        }`}
+      >
+        {settingsError && <p className="p-3 text-sm text-rose-600">{settingsError}</p>}
 
-      {view === 'settings' && settings && (
-        <Settings
-          settings={settings}
-          onSaved={setSettings}
-          onClose={settings.jiraConfigured ? () => setView('tracker') : null}
-          toast={toast}
-        />
-      )}
+        {view === 'settings' && settings && (
+          <Settings
+            settings={settings}
+            onSaved={setSettings}
+            onClose={settings.jiraConfigured ? () => setView('tracker') : null}
+            toast={toast}
+          />
+        )}
 
-      {view === 'tracker' && (
-        <>
-          <PendingQueue items={pending.items} onRetry={retryOne} onRetryAll={retryAll} onDiscard={pending.remove} />
+        {view === 'tracker' && settings && (
+          <>
+            <PendingQueue items={pending.items} onRetry={retryOne} onRetryAll={retryAll} onDiscard={pending.remove} />
 
-          <section className="card space-y-5">
-            <div>
-              <label className="label">Ticket</label>
-              <TicketPicker
-                tickets={tickets}
-                value={timer.ticket}
-                onChange={timer.setTicket}
-                onLookup={lookupTicket}
-                onRefresh={loadTickets}
-                loading={ticketsLoading}
-                disabled={timer.hasTime}
-              />
-              {ticketsError && <p className="mt-1 text-sm text-rose-600">{ticketsError}</p>}
-              {timer.ticket && settings?.jiraBaseUrl && (
-                <a
-                  className="mt-1 inline-block text-xs text-sky-600 hover:underline"
-                  href={`${settings.jiraBaseUrl}/browse/${timer.ticket.key}`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Open {timer.ticket.key} in Jira ↗
-                </a>
+            <div className="space-y-2.5 p-3">
+              <div className="flex items-start gap-1.5">
+                <TicketPicker
+                  tickets={tickets}
+                  value={timer.ticket}
+                  onChange={timer.setTicket}
+                  onLookup={lookupTicket}
+                  onRefresh={loadTickets}
+                  loading={ticketsLoading}
+                  disabled={timer.hasTime}
+                />
+                <button className="icon-btn" onClick={() => setView('settings')} title={`Settings · logging to ${settings.mode === 'tempo' ? 'Tempo' : 'Jira worklogs'}`}>
+                  <GearIcon />
+                </button>
+              </div>
+              {ticketsError && <p className="text-xs text-rose-600">{ticketsError}</p>}
+
+              {logging && timer.ticket ? (
+                <LogForm
+                  ticket={timer.ticket}
+                  elapsedSeconds={logging.elapsedSeconds}
+                  startedAt={logging.startedAt}
+                  roundingMinutes={settings.roundingMinutes ?? 1}
+                  mode={settings.mode}
+                  submitting={submitting}
+                  onSubmit={submitWorklog}
+                  onCancel={() => !submitting && setLogging(null)}
+                />
+              ) : (
+                <TimerRow timer={timer} onLog={openLogForm} onDiscard={timer.reset} />
               )}
             </div>
-            <TimerCard timer={timer} onStop={openLogDialog} onDiscard={discard} />
-          </section>
 
-          <TodayLogs refreshKey={todayKey} jiraBaseUrl={settings?.jiraBaseUrl} />
-        </>
-      )}
-
-      {logging && timer.ticket && (
-        <LogDialog
-          ticket={timer.ticket}
-          elapsedSeconds={logging.elapsedSeconds}
-          startedAt={logging.startedAt}
-          roundingMinutes={settings?.roundingMinutes ?? 1}
-          mode={settings?.mode}
-          submitting={submitting}
-          onSubmit={submitWorklog}
-          onCancel={() => !submitting && setLogging(null)}
-        />
-      )}
+            <TodayLogs refreshKey={todayKey} jiraBaseUrl={settings.jiraBaseUrl} />
+          </>
+        )}
+      </main>
 
       <Toasts toasts={toasts} onDismiss={dismiss} />
-    </main>
+    </div>
   );
 }

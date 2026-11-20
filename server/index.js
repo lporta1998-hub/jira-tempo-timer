@@ -276,9 +276,27 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: err.message || 'Internal error' });
 });
 
-app.listen(PORT, HOST, () => {
-  const ui = fs.existsSync(path.join(DIST, 'index.html'))
-    ? `http://localhost:${PORT}`
-    : 'http://localhost:5173 (Vite dev server)';
-  console.log(`[jira-tempo-timer] API listening on http://${HOST}:${PORT}  —  open ${ui}`);
-});
+/**
+ * Starts listening. Called below when run with `node server/index.js`, and
+ * by the menu bar app (electron/main.js), which runs the server in-process.
+ */
+export function startServer({ port = PORT, host = HOST } = {}) {
+  return new Promise((resolve, reject) => {
+    const server = app.listen(port, host, () => {
+      const ui = fs.existsSync(path.join(DIST, 'index.html'))
+        ? `http://localhost:${port}`
+        : 'http://localhost:5173 (Vite dev server)';
+      console.log(`[jira-tempo-timer] API listening on http://${host}:${port}  —  open ${ui}`);
+      resolve(server);
+    });
+    server.on('error', reject);
+  });
+}
+
+const runDirectly = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (runDirectly) {
+  startServer().catch((err) => {
+    console.error(`[jira-tempo-timer] Could not start: ${err.message}`);
+    process.exit(1);
+  });
+}
