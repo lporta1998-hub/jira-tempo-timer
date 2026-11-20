@@ -5,6 +5,7 @@
 #   ./start.sh            build if needed, run on http://localhost:3001, open browser
 #   ./start.sh --dev      hot-reload dev mode on http://localhost:5173
 #   ./start.sh --no-open  don't open the browser
+#   ./start.sh --background  no browser, log to logs/server.log (for autostart)
 #
 # Safe to run repeatedly: it only reinstalls / rebuilds when something changed,
 # and if the app is already running it just opens the browser.
@@ -19,8 +20,19 @@ for arg in "$@"; do
   case "$arg" in
     --dev) DEV=1 ;;
     --no-open) OPEN=0 ;;
+    --background)
+      # Used by autostart: no browser, all output appended to logs/server.log.
+      OPEN=0
+      mkdir -p logs
+      # Keep the log from growing forever: start fresh once it passes ~5 MB.
+      if [ -f logs/server.log ] && [ "$(wc -c <logs/server.log)" -gt 5000000 ]; then
+        mv logs/server.log logs/server.log.old
+      fi
+      exec >>logs/server.log 2>&1
+      echo "=== $(date '+%Y-%m-%d %H:%M:%S') starting (background) ==="
+      ;;
     -h | --help)
-      sed -n '3,10p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '3,11p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)

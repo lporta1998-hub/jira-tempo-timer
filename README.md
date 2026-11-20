@@ -12,6 +12,8 @@ A small local stopwatch for Jira Cloud. Pick one of your assigned tickets, hit *
 ```
 jira-tempo-timer/
 ├── package.json          # scripts: dev / build / start
+├── start.sh              # one-command launcher (build if needed, run, open browser)
+├── autostart.sh          # install/uninstall start-at-login (macOS, Linux, Windows)
 ├── vite.config.js        # Vite + React + Tailwind; proxies /api → Express in dev
 ├── index.html
 ├── .env.example          # optional env overrides (copy to .env)
@@ -65,6 +67,24 @@ The script checks for Node 20+, and runs `npm install` / `vite build` only when 
 ```bash
 alias timer='~/path/to/jira-tempo-timer/start.sh'
 ```
+
+### Start automatically at login: `autostart.sh`
+
+```bash
+./autostart.sh install     # start now and at every login (in the background, no browser)
+./autostart.sh status      # is it registered / running?
+./autostart.sh uninstall   # stop it and remove it from login
+```
+
+Then bookmark http://localhost:3001. Output goes to `logs/server.log`.
+
+| OS | Mechanism |
+|---|---|
+| macOS | LaunchAgent `~/Library/LaunchAgents/com.jira-tempo-timer.plist` (restarts if it crashes) |
+| Linux | systemd user service `jira-tempo-timer` (restarts if it crashes); falls back to `~/.config/autostart` without systemd |
+| Windows | Hidden launcher in your Startup folder; run the script from **Git Bash** |
+
+After a `git pull`, the next start rebuilds the UI automatically. If you move the folder or switch Node versions (e.g. via nvm), run `./autostart.sh install` again, because it records the paths at install time.
 
 ### Getting your credentials
 
