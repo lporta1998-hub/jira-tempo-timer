@@ -52,6 +52,20 @@ jira-tempo-timer/
 npm start
 ```
 
+### One-command start: `start.sh`
+
+```bash
+./start.sh            # build if needed, run on http://localhost:3001 and open the browser
+./start.sh --dev      # hot-reload dev mode on http://localhost:5173
+./start.sh --no-open  # don't open the browser
+```
+
+The script checks for Node 20+, and runs `npm install` / `vite build` only when something changed. If the app is already running, it just opens the browser. To launch it from anywhere, add an alias to `~/.bashrc` or `~/.zshrc`:
+
+```bash
+alias timer='~/path/to/jira-tempo-timer/start.sh'
+```
+
 ### Getting your credentials
 
 | Setting | Where to find it |
