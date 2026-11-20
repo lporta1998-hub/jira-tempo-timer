@@ -49,7 +49,7 @@ jira-tempo-timer/
 
 **Requirements:** Node.js 20 or newer, on macOS, Linux or Windows 10/11.
 
-> **Windows:** use the `.cmd` files instead of the `.sh` ones (`start.cmd`, `autostart.cmd`), in Command Prompt, PowerShell, or by double-clicking. They do the same things. Git Bash also works with the `.sh` files.
+> **Windows:** use the `.cmd` files instead of the `.sh` ones (`start.cmd`, `autostart.cmd`). They do the same things. In **Command Prompt** type `autostart.cmd install`; in **PowerShell** add `.\` in front: `.\autostart.cmd install`. Double-clicking also works. Git Bash works with the `.sh` files.
 
 1. **Install:**
    ```bash
@@ -103,7 +103,7 @@ alias timer='~/path/to/jira-tempo-timer/start.sh'
 
 ### Start automatically at login: `autostart.sh` / `autostart.cmd`
 
-**Windows:**
+**Windows** (in PowerShell, prefix with `.\`):
 
 ```bat
 autostart.cmd install     :: menu bar app, now and at every login
@@ -183,4 +183,6 @@ Any value set in `.env` overrides the Settings screen, where it shows as *locked
 | Port already in use | Set `PORT=3002` in `.env`. Vite's proxy picks up the same variable. |
 | Windows: no tray icon | Click the **^** next to the clock, or **Settings → Personalization → Taskbar → Other system tray icons** and turn on *Electron* / *Jira Tempo Timer*. |
 | Windows: `.sh` scripts fail in Git Bash with `$'\r': command not found` | Your checkout converted line endings. Run `git rm --cached -r . && git reset --hard` once; `.gitattributes` keeps them LF from then on. |
+| Windows: "Node.js was not found" / "Impossibile trovare il percorso specificato" | Open a **new** terminal after installing Node and check `node -v`. If that fails too, sign out and back in, or reinstall Node (LTS) from nodejs.org with default options. |
+| Windows: "autostart.cmd is not recognized" in PowerShell | Type `.\autostart.cmd install`; PowerShell doesn't run files from the current folder without `.\`. |
 | Windows: `start.cmd` window closes immediately | Run it from a Command Prompt to see the error, or check `logs\server.log` for the tray app. |

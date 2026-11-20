@@ -5,13 +5,16 @@ rem   start.cmd            build if needed, run on http://localhost:3001, open b
 rem   start.cmd --tray     system tray app
 rem   start.cmd --dev      hot-reload dev mode on http://localhost:5173
 rem   start.cmd --no-open  do not open the browser
+rem In PowerShell, type .\start.cmd instead of start.cmd
 rem ---------------------------------------------------------------------------
 setlocal
-where node >/dev/null 2>/dev/null || (
-  echo Node.js 20 or newer is required: https://nodejs.org
-  pause
-  exit /b 1
-)
+call "%~dp0scripts\find-node.cmd"
+if errorlevel 1 goto :failed
 node "%~dp0scripts\launch.mjs" %*
-rem Keep the window open on errors when started by double-click.
-if errorlevel 1 pause
+if errorlevel 1 goto :failed
+exit /b 0
+
+:failed
+rem Keep the window open when started by double-click, so the error can be read.
+pause
+exit /b 1
